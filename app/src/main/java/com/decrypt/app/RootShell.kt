@@ -11,10 +11,14 @@ class ShellResult(val exitCode: Int, val out: ByteArray) {
  * 有些 root 管理器（KernelSU 就是）会让 su 继承调用者应用自己的 mount namespace，
  * 于是在这条 shell 里 /data/data 只剩下寥寥几个条目，别人看得见的数据目录我们看不见。
  * 这里备了几条路，开跑前挨个试，谁真能看见别人的数据就用谁。
+ *
+ * 除了探测，一次解密只需要两次 shell 调用：一次把源文件端回来，一次把明文写出去。
+ * 解密、备份决策、校验全在 app 里做。
  */
 object RootShell {
 
     private const val TIMEOUT_MS = 90_000L
+    private const val MARK = "@@FILE@@"
 
     private val CANDIDATES = listOf(
         "su",
@@ -46,17 +50,16 @@ object RootShell {
     var suPath: String? = null
         private set
 
-    private var current = STRATEGIES[0]
+    private var prefix = ""
     private var useNsenter = false
     private var useMaster = false
-    private var prefix = ""
 
     /** 现在走的是哪条路，界面上会显示 */
     var modeName: String = "还没探测"
         private set
 
     /** 纯 shell 转义，不带路径前缀 */
-    fun shq(s: String): String = "'" + s.replace("'", "'\\''") + "'"
+    private fun shq(s: String): String = "'" + s.replace("'", "'\\''") + "'"
 
     /** 路径转义：带上当前策略需要的前缀 */
     fun q(path: String): String = shq(prefix + path)
@@ -102,7 +105,6 @@ object RootShell {
     }
 
     private fun apply(s: Strategy) {
-        current = s
         prefix = s.prefix
         useNsenter = s.nsenter
         useMaster = s.master
@@ -111,14 +113,12 @@ object RootShell {
     private fun countAppData(): Int =
         sh("ls -1 ${q("/data/data")} 2>/dev/null | wc -l").text.toIntOrNull() ?: 0
 
-    fun sh(cmd: String, stdin: ByteArray? = null): ShellResult {
+    private fun sh(cmd: String, stdin: ByteArray? = null): ShellResult {
         val su = suPath ?: return ShellResult(-1, "没有可用的 su".toByteArray())
         val real = if (useNsenter) "nsenter -t 1 -m /system/bin/sh -c ${shq(cmd)}" else cmd
         val args = if (useMaster) listOf(su, "-M", "-c", real) else listOf(su, "-c", real)
         return run(args, stdin)
     }
-
-    fun read(path: String): ShellResult = sh("cat ${q(path)}")
 
     /** DIR / FILE / NONE */
     fun kindOf(path: String): String {
@@ -127,7 +127,28 @@ object RootShell {
             .text.lines().last().trim()
     }
 
-    /** 直接写字节：用 cat 从 stdin 接管，省掉转义、base64 这些麻烦 */
+    /**
+     * 一次调用把源目录里的文件全端回来（源路径给的是文件也行）。
+     * 加密 yaml 本身就是 base64 文本，所以拿一个标记行来切段是安全的。
+     */
+    fun readAll(target: String): List<Pair<String, ByteArray>> {
+        val t = q(target)
+        val cmd = "for f in $t $t/*; do [ -f \"\$f\" ] || continue; " +
+            "printf '\\n$MARK%s\\n' \"\$f\"; cat \"\$f\"; done"
+        val text = sh(cmd).out.toString(Charsets.UTF_8)
+        return text.split(MARK).drop(1).mapNotNull { chunk ->
+            val nl = chunk.indexOf('\n')
+            if (nl < 0) {
+                null
+            } else {
+                val path = chunk.substring(0, nl).trim()
+                val body = chunk.substring(nl + 1).trim()
+                if (path.isEmpty() || body.isEmpty()) null else path to body.toByteArray(Charsets.UTF_8)
+            }
+        }
+    }
+
+    /** 一次调用干完：记权限 → 备份 → 建目录 → 写内容 → 还原权限 → 回报大小 */
     fun writeFile(path: String, bytes: ByteArray, backup: Boolean, log: (String) -> Unit): Boolean {
         if (path.isEmpty() || !path.contains('/')) {
             log("✗ 目标路径不合法")
@@ -136,28 +157,24 @@ object RootShell {
         val dir = path.substringBeforeLast('/')
         val f = q(path)
 
-        val meta = sh("stat -c '%u:%g:%a' $f 2>/dev/null").text
-
-        if (backup && meta.isNotEmpty()) {
-            if (sh("cp -f $f $f.bak").ok) log("· 已备份 → $path.bak")
+        val cmd = buildString {
+            append("M=\$(stat -c '%u:%g:%a' $f 2>/dev/null); ")
+            if (backup) append("[ -n \"\$M\" ] && cp -f $f $f.bak && printf 'bak '; ")
+            append("mkdir -p ${q(dir)}; ")
+            append("cat > $f; ")
+            append("if [ -n \"\$M\" ]; then IFS=:; set -- \$M; chown \"\$1:\$2\" $f; chmod \"\$3\" $f; ")
+            append("else chmod 644 $f; fi; ")
+            append("wc -c < $f")
         }
 
-        sh("mkdir -p ${q(dir)}")
-
-        val w = sh("cat > $f", bytes)
-        if (!w.ok) {
-            log("✗ 写入失败：${w.text.ifEmpty { "退出码 ${w.exitCode}" }}")
+        val r = sh(cmd, bytes)
+        if (!r.ok) {
+            log("✗ 写入失败：${r.text.ifEmpty { "退出码 ${r.exitCode}" }}")
             return false
         }
+        if (r.text.startsWith("bak")) log("· 已备份 → $path.bak")
 
-        val parts = meta.split(':')
-        if (parts.size == 3) {
-            sh("chown ${parts[0]}:${parts[1]} $f; chmod ${parts[2]} $f")
-        } else {
-            sh("chmod 644 $f")
-        }
-
-        val size = sh("wc -c < $f").text.toLongOrNull()
+        val size = r.text.lines().lastOrNull()?.trim()?.toLongOrNull()
         log("· 已写入 $path  ($size 字节)")
         return size == bytes.size.toLong()
     }

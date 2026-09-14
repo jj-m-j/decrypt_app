@@ -18,12 +18,20 @@ android {
         targetSdk = 37
         versionCode = 1
         versionName = "1.0"
+
+        // 只留 64 位
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
     }
 
     buildTypes {
         release {
             // 用 debug 签名，产出可直接安装的 release APK
             signingConfig = signingConfigs.getByName("debug")
+            // R8，dex 占了这个包 96% 的体积
+            optimization.enable = true
+            vcsInfo.include = false
         }
     }
 

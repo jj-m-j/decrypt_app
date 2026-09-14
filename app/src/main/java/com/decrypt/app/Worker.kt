@@ -7,8 +7,8 @@ import java.util.Locale
 object Worker {
 
     /**
-     * 源路径给目录就用目录：里面的文件名是随机的，不写进配置，
-     * 扫一遍挑第一个能解开的。给的是文件就当成那一个文件。
+     * 全程两次 shell 调用：一次把源目录里的文件端回来，一次把明文写出去。
+     * 解密、挑文件、备份决策、结果校验都在 app 里做。
      */
     fun run(srcInput: String, dstInput: String, backup: Boolean, log: (String) -> Unit): Boolean {
         log("请求 root 权限…")
@@ -24,49 +24,26 @@ object Worker {
             return false
         }
 
-        if (RootShell.kindOf(src) == "NONE") {
-            log("✗ 当前这条路看不见：$src")
+        log("读取源目录…")
+        var entries = RootShell.readAll(src)
+        if (entries.isEmpty()) {
+            log("✗ 这条 su 看不到：$src")
             log("· 换几条路再试：")
             RootShell.probe(log)
-            if (RootShell.kindOf(src) == "NONE") {
-                log("✗ 都不行。上面这几行发我，一眼就能看出是哪儿的毛病")
-                return false
-            }
-            log("· 换路之后看见了")
+            entries = RootShell.readAll(src)
         }
-
-        var files: List<String> = emptyList()
-        when (RootShell.kindOf(src)) {
-            "FILE" -> {
-                log("· 源路径是个文件，直接用")
-                files = listOf(src)
-            }
-
-            else -> {
-                val r = RootShell.sh("ls -1 ${RootShell.q(src)}")
-                val names = r.text.lines()
-                    .map { it.trim() }
-                    .filter { it.isNotEmpty() && it != "." && it != ".." }
-                if (names.isEmpty()) {
-                    log("✗ 目录是空的或者列不出来")
-                    return false
-                }
-                log("· 目录里 ${names.size} 个文件")
-                files = names.map { "$src/$it" }
-            }
+        if (entries.isEmpty()) {
+            log("✗ 都看不见。上面那几行发我")
+            return false
         }
+        log("· 拿到 ${entries.size} 个文件")
 
         var yaml: String? = null
         var used = ""
 
-        for (f in files.take(30)) {
-            val name = f.substringAfterLast('/')
-            val raw = RootShell.read(f)
-            if (!raw.ok) {
-                log("  · $name 读不了：${raw.text.ifEmpty { "退出码 ${raw.exitCode}" }}")
-                continue
-            }
-            val plain = ProfileCrypto.decrypt(raw.out)
+        for ((path, raw) in entries.take(30)) {
+            val name = path.substringAfterLast('/')
+            val plain = ProfileCrypto.decrypt(raw)
             if (plain == null) {
                 log("  · $name 不是能解开的加密 yaml，跳过")
                 continue
@@ -91,12 +68,13 @@ object Worker {
             return false
         }
 
+        log("写入目标…")
         val ok = RootShell.writeFile(dst, bytes, backup, log)
         log(if (ok) "✓ 完成" else "✗ 写完校验对不上，检查目标路径")
         return ok
     }
 
-    /** 自检：只看两条路能不能对上，不做全盘扫描 */
+    /** 自检：看几条路各自能看见多少数据目录，不做全盘扫描 */
     fun diagnose(srcDir: String, dstFile: String, log: (String) -> Unit) {
         log("== root ==")
         if (!RootShell.request()) {
@@ -122,6 +100,10 @@ object Worker {
         log(orNone(RootShell.sh("ls -l ${RootShell.q(dstFile.trim())} 2>&1").text))
         log("")
         log(orNone(RootShell.sh("ls -la ${RootShell.q(dstFile.trim().substringBeforeLast('/'))} 2>&1 | head -20").text))
+        log("")
+
+        log("== 解密 ==")
+        log("纯 Kotlin：Base64 解码 + 循环 XOR，不调用任何外部脚本")
         log("")
         log("· 时间：${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())}")
     }
