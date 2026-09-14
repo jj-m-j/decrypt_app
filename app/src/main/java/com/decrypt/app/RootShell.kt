@@ -90,6 +90,8 @@ object RootShell {
 
     /** 自检用：把每条路的结果都报出来 */
     fun probe(log: (String) -> Unit) {
+        apply(STRATEGIES[0])
+        log("  · 默认视图下 /data/data 里是：${sh("ls -1 ${q("/data/data")} 2>/dev/null | head -6").text.replace("\n", "  ")}")
         for (s in STRATEGIES) {
             apply(s)
             val n = countAppData()
