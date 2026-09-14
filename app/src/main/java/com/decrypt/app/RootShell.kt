@@ -159,7 +159,7 @@ object RootShell {
 
         val cmd = buildString {
             append("M=\$(stat -c '%u:%g:%a' $f 2>/dev/null); ")
-            if (backup) append("[ -n \"\$M\" ] && cp -f $f $f.bak && printf 'bak '; ")
+            if (backup) append("[ -n \"\$M\" ] && cp -f $f $f.bak && printf 'bak\n'; ")
             append("mkdir -p ${q(dir)}; ")
             append("cat > $f; ")
             append("if [ -n \"\$M\" ]; then IFS=:; set -- \$M; chown \"\$1:\$2\" $f; chmod \"\$3\" $f; ")
@@ -174,7 +174,8 @@ object RootShell {
         }
         if (r.text.startsWith("bak")) log("· 已备份 → $path.bak")
 
-        val size = r.text.lines().lastOrNull()?.trim()?.toLongOrNull()
+        // 输出的最后一行是 wc -c，别被上面那行 "bak" 搅了
+        val size = r.text.lines().lastOrNull { it.trim().toLongOrNull() != null }?.trim()?.toLongOrNull()
         log("· 已写入 $path  ($size 字节)")
         return size == bytes.size.toLong()
     }
