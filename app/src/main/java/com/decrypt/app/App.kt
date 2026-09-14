@@ -121,7 +121,7 @@ fun Screen() {
                     Text(
                         text = when (rootOk) {
                             null -> "正在检查 root…"
-                            true -> "root 权限正常"
+                            true -> "root 权限正常 · ${RootShell.mode}"
                             false -> "没有 root，先去 root 管理器授权"
                         },
                         style = MiuixTheme.textStyles.body1,
@@ -159,6 +159,7 @@ fun Screen() {
                         keyboardActions = imeDone,
                         modifier = Modifier.fillMaxWidth(),
                     )
+                    Spacer(Modifier.height(14.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.End,

@@ -25,23 +25,52 @@ object RootShell {
     var suPath: String? = null
         private set
 
-    /** 单引号里的路径丢给 shell 之前要先补一下反斜杠，不然带引号的路径直接崩 */
+    /** 现在用的是哪种方式，自检里会打出来 */
+    var mode: String = "还没探测"
+        private set
+
+    /**
+     * 有些 root 管理器会把 su 塞进调用者自己的 mount namespace，
+     * 结果就是别人看得见的 /data/user/0/xxx 我们看得见软链接、里面却是空的。
+     * 这种情况就用 nsenter 进 pid 1 的 mount namespace 再干活。
+     */
+    private var globalNs = false
+
+    /** 单引号里的路径丢给 shell 之前要先补一下反斜杠 */
     fun q(s: String): String = "'" + s.replace("'", "'\\''") + "'"
 
     /** 挨个试 su，能跑出 uid=0 才算数 */
     fun request(): Boolean {
         for (c in CANDIDATES) {
             suPath = c
+
+            globalNs = false
             val r = run("id")
-            if (r.ok && r.text.contains("uid=0")) return true
+            if (!(r.ok && r.text.contains("uid=0"))) continue
+
+            // 拿到 root 了，再看这条 su 能不能看见别人的 app 数据
+            if (!canSeeAppData()) {
+                globalNs = true
+                if (!canSeeAppData()) globalNs = false
+            }
+
+            mode = if (globalNs) "$c -c（nsenter 进 init 命名空间）" else "$c -c"
+            return true
         }
         suPath = null
+        mode = "没有可用的 su"
         return false
+    }
+
+    private fun canSeeAppData(): Boolean {
+        val n = sh("ls -1 /data/data 2>/dev/null | wc -l").text.toIntOrNull() ?: 0
+        return n > 20
     }
 
     fun sh(cmd: String, stdin: ByteArray? = null): ShellResult {
         val su = suPath ?: return ShellResult(-1, "没有可用的 su".toByteArray())
-        return run(cmd, stdin, su)
+        val real = if (globalNs) "nsenter -t 1 -m /system/bin/sh -c ${q(cmd)}" else cmd
+        return run(real, stdin, su)
     }
 
     /** 读文件；顺便把「路径其实是目录」这类错误原样带出来 */
