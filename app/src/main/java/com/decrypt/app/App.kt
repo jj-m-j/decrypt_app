@@ -121,7 +121,7 @@ fun Screen() {
                     Text(
                         text = when (rootOk) {
                             null -> "正在检查 root…"
-                            true -> "root 权限正常 · ${RootShell.mode}"
+                            true -> "root 权限正常 · ${RootShell.modeName}"
                             false -> "没有 root，先去 root 管理器授权"
                         },
                         style = MiuixTheme.textStyles.body1,
@@ -220,7 +220,7 @@ fun Screen() {
                 )
                 TextButton(
                     text = "自检",
-                    onClick = { launchLog { Worker.diagnose(it) } },
+                    onClick = { launchLog { Worker.diagnose(srcDir, dstFile, it) } },
                     modifier = Modifier.weight(1f),
                     enabled = !busy,
                 )
