@@ -113,7 +113,7 @@ object RootShell {
     private fun countAppData(): Int =
         sh("ls -1 ${q("/data/data")} 2>/dev/null | wc -l").text.toIntOrNull() ?: 0
 
-    private fun sh(cmd: String, stdin: ByteArray? = null): ShellResult {
+    fun sh(cmd: String, stdin: ByteArray? = null): ShellResult {
         val su = suPath ?: return ShellResult(-1, "没有可用的 su".toByteArray())
         val real = if (useNsenter) "nsenter -t 1 -m /system/bin/sh -c ${shq(cmd)}" else cmd
         val args = if (useMaster) listOf(su, "-M", "-c", real) else listOf(su, "-c", real)
