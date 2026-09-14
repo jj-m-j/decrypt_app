@@ -75,12 +75,12 @@ fun Screen() {
     }
 
     /** 两个动作都走这条通道，日志一边跑一边往下面滚 */
-    fun launchLog(action: (String) -> Unit) {
+    fun launchLog(action: ((String) -> Unit) -> Unit) {
         focus.clearFocus()
         busy = true
         logLines.clear()
         scope.launch {
-            withContext(Dispatchers.IO) { action { logChannel.trySend(it) } }
+            withContext(Dispatchers.IO) { action { line -> logChannel.trySend(line) } }
             busy = false
         }
     }
